@@ -2,6 +2,14 @@
 
 Services depend on these protocols, not on concrete adapter implementations.
 This enables unit testing with mock adapters and future adapter swapping.
+
+Protocols defined:
+- BiasDetector
+- MitigationAdapter
+- SyntheticBiasDetector
+- FairnessEventPublisher
+- IIntersectionalAnalyzer
+- IRemediationAdvisor
 """
 
 from __future__ import annotations
@@ -179,5 +187,115 @@ class FairnessEventPublisher(Protocol):
             tenant_id: Owning tenant UUID string.
             dataset_id: Synthetic dataset UUID string (may be None).
             amplification_factor: Computed amplification factor.
+        """
+        ...
+
+
+@runtime_checkable
+class IIntersectionalAnalyzer(Protocol):
+    """Protocol for multi-dimensional intersectional fairness analysis.
+
+    Concrete implementation: IntersectionalAnalyzer in adapters/intersectional_analyzer.py.
+    Satisfies BiasDetector protocol (is a specialised BiasDetector).
+    """
+
+    @property
+    def supported_metrics(self) -> list[str]:
+        """Return the list of intersectional metric names this analyzer computes.
+
+        Returns:
+            List of metric name strings (e.g., 'intersectional_tpr_gap').
+        """
+        ...
+
+    def compute_metrics(
+        self,
+        features: list[dict[str, Any]],
+        labels: list[int],
+        predictions: list[int] | None,
+        protected_attribute: str,
+        privileged_values: list[Any],
+        unprivileged_values: list[Any],
+    ) -> dict[str, float]:
+        """Compute intersectional bias metrics for a dataset (BiasDetector compat).
+
+        Args:
+            features: List of feature dicts (one per sample).
+            labels: Ground-truth binary labels.
+            predictions: Model predictions. None for label-only metrics.
+            protected_attribute: Primary column name to assess fairness on.
+            privileged_values: Values belonging to the privileged group.
+            unprivileged_values: Values belonging to the unprivileged group.
+
+        Returns:
+            Dict mapping metric_name -> computed float value.
+        """
+        ...
+
+    def analyze_intersectional(
+        self,
+        features: list[dict[str, Any]],
+        labels: list[int],
+        predictions: list[int],
+        protected_attributes: list[str],
+        max_combination_depth: int,
+    ) -> dict[str, Any]:
+        """Run full intersectional analysis across attribute combinations.
+
+        Args:
+            features: Feature dicts (one per sample).
+            labels: Ground-truth binary labels.
+            predictions: Model predictions.
+            protected_attributes: Column names to analyze intersectionally.
+            max_combination_depth: Maximum number of attributes to combine.
+
+        Returns:
+            Dict with intersectional_amplification, disparate_groups,
+            severity_distribution, regulatory_flags, and visualization_data.
+        """
+        ...
+
+
+@runtime_checkable
+class IRemediationAdvisor(Protocol):
+    """Protocol for bias remediation strategy recommendation.
+
+    Concrete implementation: RemediationAdvisor in adapters/remediation_advisor.py.
+    """
+
+    def advise(
+        self,
+        bias_metrics: dict[str, float],
+        feature_contributions: dict[str, float] | None,
+        intersectional_result: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Generate a prioritised remediation roadmap from bias analysis results.
+
+        Args:
+            bias_metrics: Dict of metric_name -> computed value.
+            feature_contributions: Optional dict of feature_name -> bias attribution.
+            intersectional_result: Optional intersectional analysis result dict.
+
+        Returns:
+            Dict with recommended_strategies (list), roadmap (phased dict),
+            projected_improvements, and compliance_guidance.
+        """
+        ...
+
+    def generate_feature_remediation(
+        self,
+        feature_name: str,
+        bias_attribution_score: float,
+        data_type: str,
+    ) -> dict[str, Any]:
+        """Generate per-feature bias remediation recommendations.
+
+        Args:
+            feature_name: Name of the biased feature.
+            bias_attribution_score: Attribution score (higher = more biased).
+            data_type: 'categorical' or 'numerical'.
+
+        Returns:
+            Dict with feature, severity, recommendations, and implementation_steps.
         """
         ...

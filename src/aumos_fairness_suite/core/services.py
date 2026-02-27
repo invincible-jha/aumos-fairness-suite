@@ -23,9 +23,11 @@ from aumos_common.pagination import PageRequest
 
 from aumos_fairness_suite.adapters.detection.aif360_detector import AIF360Detector
 from aumos_fairness_suite.adapters.detection.fairlearn_detector import FairlearnDetector
+from aumos_fairness_suite.adapters.intersectional_analyzer import IntersectionalAnalyzer
 from aumos_fairness_suite.adapters.mitigation.in_processing import InProcessingAdapter
 from aumos_fairness_suite.adapters.mitigation.post_processing import PostProcessingAdapter
 from aumos_fairness_suite.adapters.mitigation.pre_processing import PreProcessingAdapter
+from aumos_fairness_suite.adapters.remediation_advisor import RemediationAdvisor
 from aumos_fairness_suite.adapters.repositories import (
     AssessmentRepository,
     BiasMetricRepository,
@@ -1032,3 +1034,151 @@ class ReportingService:
             )
             for m in metrics
         ]
+
+
+class IntersectionalFairnessService:
+    """Orchestrates intersectional fairness analysis and remediation advice.
+
+    Combines multi-dimensional group analysis (IntersectionalAnalyzer) with
+    debiasing strategy recommendations (RemediationAdvisor). All CPU-bound
+    computation is offloaded to asyncio.to_thread() to avoid blocking the
+    event loop.
+
+    Args:
+        session: Async SQLAlchemy session (injected by FastAPI dependency).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Initialize with injected session.
+
+        Args:
+            session: Async SQLAlchemy session for any DB lookups needed.
+        """
+        self._session = session
+        self._intersectional_analyzer = IntersectionalAnalyzer()
+        self._remediation_advisor = RemediationAdvisor()
+
+    async def analyze_intersectional_bias(
+        self,
+        features: list[dict[str, Any]],
+        labels: list[int],
+        predictions: list[int],
+        protected_attributes: list[str],
+        tenant: Any,
+        max_combination_depth: int = 2,
+    ) -> dict[str, Any]:
+        """Run intersectional fairness analysis across attribute combinations.
+
+        Offloads CPU-bound computation to a thread pool and returns the full
+        intersectional analysis result including amplification metrics,
+        disparate groups, and regulatory flags.
+
+        Args:
+            features: Feature dicts (one per sample).
+            labels: Ground-truth binary labels.
+            predictions: Model predictions (0 or 1).
+            protected_attributes: Column names to analyze intersectionally.
+            tenant: Authenticated tenant context.
+            max_combination_depth: Maximum number of attributes to combine.
+
+        Returns:
+            Dict with intersectional_amplification, disparate_groups,
+            severity_distribution, regulatory_flags, and visualization_data.
+        """
+        tenant_id = str(tenant.tenant_id)
+        logger.info(
+            "Starting intersectional fairness analysis",
+            tenant_id=tenant_id,
+            protected_attributes=protected_attributes,
+            max_combination_depth=max_combination_depth,
+            sample_count=len(features),
+        )
+
+        result = await asyncio.to_thread(
+            self._intersectional_analyzer.analyze_intersectional,
+            features=features,
+            labels=labels,
+            predictions=predictions,
+            protected_attributes=protected_attributes,
+            max_combination_depth=max_combination_depth,
+        )
+
+        logger.info(
+            "Intersectional fairness analysis complete",
+            tenant_id=tenant_id,
+            intersectional_amplification=result.get("intersectional_amplification"),
+            disparate_groups_count=len(result.get("disparate_groups", [])),
+        )
+
+        return result
+
+    async def get_remediation_advice(
+        self,
+        bias_metrics: dict[str, float],
+        tenant: Any,
+        feature_contributions: dict[str, float] | None = None,
+        intersectional_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Generate a prioritised debiasing roadmap from bias analysis results.
+
+        Accepts bias metrics from any assessment run and produces a phased
+        remediation plan with projected improvements and compliance guidance.
+
+        Args:
+            bias_metrics: Dict of metric_name -> computed value.
+            tenant: Authenticated tenant context.
+            feature_contributions: Optional dict of feature_name -> bias attribution.
+            intersectional_result: Optional intersectional analysis result dict.
+
+        Returns:
+            Dict with recommended_strategies (list), roadmap (phased dict),
+            projected_improvements, and compliance_guidance.
+        """
+        tenant_id = str(tenant.tenant_id)
+        logger.info(
+            "Generating remediation advice",
+            tenant_id=tenant_id,
+            metric_count=len(bias_metrics),
+            has_feature_contributions=feature_contributions is not None,
+            has_intersectional=intersectional_result is not None,
+        )
+
+        advice = await asyncio.to_thread(
+            self._remediation_advisor.advise,
+            bias_metrics=bias_metrics,
+            feature_contributions=feature_contributions,
+            intersectional_result=intersectional_result,
+        )
+
+        logger.info(
+            "Remediation advice generated",
+            tenant_id=tenant_id,
+            strategy_count=len(advice.get("recommended_strategies", [])),
+        )
+
+        return advice
+
+    async def get_feature_remediation(
+        self,
+        feature_name: str,
+        bias_attribution_score: float,
+        data_type: str,
+        tenant: Any,
+    ) -> dict[str, Any]:
+        """Generate per-feature bias remediation recommendations.
+
+        Args:
+            feature_name: Name of the biased feature.
+            bias_attribution_score: Attribution score (higher = more biased).
+            data_type: 'categorical' or 'numerical'.
+            tenant: Authenticated tenant context.
+
+        Returns:
+            Dict with feature, severity, recommendations, and implementation_steps.
+        """
+        return await asyncio.to_thread(
+            self._remediation_advisor.generate_feature_remediation,
+            feature_name=feature_name,
+            bias_attribution_score=bias_attribution_score,
+            data_type=data_type,
+        )
